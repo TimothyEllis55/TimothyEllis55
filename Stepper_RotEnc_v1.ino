@@ -72,7 +72,7 @@ void loop()
       displayRun();
       break;
 
-    case DATA_INPUT_SCREEN_ENTER:
+    case DATA_INPUT_SCREEN_ENTER: // state to enter once before main state
       setValueFocus(0);
       screenState = DATA_INPUT_SCREEN;
       break;
