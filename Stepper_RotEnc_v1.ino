@@ -67,6 +67,7 @@ void loop()
   switch(screenState)
   {
     case HOME_SCREEN:
+      //read_rotary_encoder();
       moveStepper();
       updateDisplay();
       displayRun();
@@ -89,9 +90,12 @@ void moveStepper()
   int RotaryValue = 0;
   int Direction = 0; // 0 = CCW; 1 = CW
 
-  if(turnDetected)
+  
+  //if(turnDetected)
+  if(pinSwitchDetected == 1)
   {
-    turnDetected = 0;
+    pinSwitchDetected = 0;
+    //turnDetected = 0;
     RotaryValue = encoderValue * GEAR_RATIO;
 
     if(RotaryValue >= GEARED_STEPS_PER_ROTATION)
@@ -132,6 +136,8 @@ void moveStepper()
     {
       //Serial.println(StepsToMove);
       StepperSetDirection(Direction);
+
+      noInterrupts();
       for(int i=0; i<StepsToMove; i++) //1/16 steps = 3200 steps per rev
       {
         //for(int j=0; j<StepsToTake; j++)
@@ -142,6 +148,7 @@ void moveStepper()
           delayMicroseconds(PULSE_WIDTH);
         //}
       }
+      interrupts();
     }
     StepperPosition = RotaryValue;
     Serial.println(StepperPosition);
@@ -198,6 +205,10 @@ void displayRun()
     {
       //pg2 back has been pressed - go back to home screen
       screenState = HOME_SCREEN;
+    }
+    else
+    {
+      // do nothing
     }
   }
 }
