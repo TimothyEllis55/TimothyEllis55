@@ -14,11 +14,15 @@ AccelStepper stepper2(AccelStepper::DRIVER, 21, 20); // (21 = step) ; (20 = dir)
 #define CCW           0
 #define CW            1
 #define PULSE_WIDTH                     500
+#define SPEED                          4000 // Stepper speed in steps per second
 #define RUNNING                           1
 #define STOPPED                           0
 
 #define NO_INIT                           0
 #define INIT                              1
+
+#define FALSE                             0
+#define TRUE                              1
 
 #define MOTOR_STEPS_PER_ROTATION        200
 #define GEAR_RATIO                      100
@@ -31,6 +35,7 @@ AccelStepper stepper2(AccelStepper::DRIVER, 21, 20); // (21 = step) ; (20 = dir)
 
 #define BUTTON_ID_03                      3
 #define BUTTON_ID_04                      4
+#define BUTTON_ID_06                      6
 #define BUTTON_ID_07                      7
 
 int screenState = HOME_SCREEN_INIT; // start at home screen init state
@@ -45,6 +50,7 @@ int By;
 int StepperPosition = 0;
 int PinSwitchFlag = 0;
 int SavedEncoderValue = 0;
+int motorDirectionChange = FALSE;
 
 typedef struct
 {
@@ -72,9 +78,9 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(enc_clk), encoder, FALLING);
   attachInterrupt(digitalPinToInterrupt(enc_sw), pin_switch, FALLING);
 
-  stepper1.setMaxSpeed(2000);
+  stepper1.setMaxSpeed(SPEED);
   stepper1.setAcceleration(10000);
-  stepper2.setMaxSpeed(2000);
+  stepper2.setMaxSpeed(SPEED);
   stepper2.setAcceleration(10000);
   
   restoreNVM(); // read nvm and restore stored variables
@@ -98,7 +104,6 @@ void loop()
       break;
 
     case DATA_INPUT_SCREEN_INIT:                     // state to enter once before main state
-      data_input_screen_init();
       data_input_screen_run(INIT);
       screenState = DATA_INPUT_SCREEN;
       break;
@@ -137,11 +142,35 @@ void readRotaryEncoder()
 
 void AccelStepper_run(int stepperPos)
 {
+  int stepper_1_pos = stepperPos;
+  int stepper_2_pos = stepperPos;
+  static int motorDirectionChangePrev = 0;
+
   if(pinSwitchDetected == 1)
   {
     pinSwitchDetected = 0;
-    stepper1.moveTo(stepperPos);
-    stepper2.moveTo(stepperPos);
+
+    if(motorDirectionChange == TRUE && motorDirectionChangePrev == FALSE)
+    {
+      stepper2.setCurrentPosition(-stepper2.currentPosition());
+      motorDirectionChangePrev = motorDirectionChange;
+    }
+    else if(motorDirectionChange == FALSE && motorDirectionChangePrev == TRUE)
+    {
+      stepper2.setCurrentPosition(-stepper2.currentPosition());
+      motorDirectionChangePrev = motorDirectionChange;
+    }
+    if(motorDirectionChange == TRUE)
+    {
+      stepper_2_pos = -stepperPos;  // run stepper 2 in opposite direction to stepper 1
+    }
+    else if(motorDirectionChange == FALSE)
+    {
+      stepper_2_pos = stepperPos;  // run stepper 2 in opposite direction to stepper 1
+    }
+    
+    stepper1.moveTo(stepper_1_pos);
+    stepper2.moveTo(stepper_2_pos);
     displayMotorStatus(RUNNING);
   }
   stepper1.run();
@@ -162,7 +191,7 @@ void updateDisplay(int stepper_pos, int init)
 {
   static int currentValue = 0;
   int displayValue = 0;
-  //displayValue = (StepperPosition * 360 / 20000);
+  //displayValue = (stepper_pos * 360 / 20000);
 
   displayValue = stepper_pos;
 
@@ -198,16 +227,16 @@ void displayRun()
         screenState = DATA_INPUT_SCREEN_INIT;    // button pg2 has been pressed - this is data entry screen
         break;
 
+      case BUTTON_ID_06:
+        (motorDirectionChange) ? (motorDirectionChange = FALSE) : (motorDirectionChange = TRUE);
+        (motorDirectionChange) ? (Serial1.print("b2.txt=\"OPP\"\xFF\xFF\xFF")) : (Serial1.print("b2.txt=\"SAME\"\xFF\xFF\xFF"));
+        break;
+
       case BUTTON_ID_07:
         screenState = HOME_SCREEN_INIT;
         break;
     }
   }
-}
-
-void StepperSetDirection(int Direction)
-{
-  (Direction) ? (digitalWrite(dir_pin, LOW)) : (digitalWrite(dir_pin, HIGH));
 }
 
 void pin_switch()
@@ -217,7 +246,7 @@ void pin_switch()
 
 void restoreNVM()
 {
-  flash_variables = flash_store.read();
+  flash_variables = flash_store.read();                             // read structure
   StepperPosition = flash_variables.nvm_motor_position;             // restore stepper position
   encoderValue = flash_variables.nvm_encoder_value;                 // restore encoder value
   SavedEncoderValue = flash_variables.nvm_saved_encoder_value;      // restore saved encoder value
@@ -227,12 +256,12 @@ void restoreNVM()
 
 void saveToFlash()
 {
-  flash_variables.nvm_motor_position = StepperPosition;
-  flash_variables.nvm_encoder_value = encoderValue;
-  flash_variables.nvm_saved_encoder_value = SavedEncoderValue;
-  flash_variables.nvm_Bx = Bx;
-  flash_variables.nvm_By = By;
-  flash_store.write(flash_variables);
+  flash_variables.nvm_motor_position = StepperPosition;             // save stepper position
+  flash_variables.nvm_encoder_value = encoderValue;                 // save encoder value
+  flash_variables.nvm_saved_encoder_value = SavedEncoderValue;      // save backup of encoder value
+  flash_variables.nvm_Bx = Bx;                                      // save Bx
+  flash_variables.nvm_By = By;                                      // save By
+  flash_store.write(flash_variables);                               // save structure
 }
 
 void data_input_screen_run(int init)
@@ -245,6 +274,18 @@ void data_input_screen_run(int init)
   {
     Bx_previous_value = 0;
     By_previous_value = 0;
+    SavedEncoderValue = encoderValue;
+    encoderValue = 0;
+    setValueFocus(0);
+    PinSwitchFlag = 0;
+
+    Serial1.print("n0.val=");
+    Serial1.print(Bx);
+    Serial1.print("\xFF\xFF\xFF");
+
+    Serial1.print("n1.val=");
+    Serial1.print(By);
+    Serial1.print("\xFF\xFF\xFF");
     return;
   }
 
@@ -347,7 +388,7 @@ void displayMotorStatus(int run_stop)
   }
   else if(run_stop == 1 && (previous_value != run_stop))
   {
-    Serial1.print("t1.txt=\"running...\"");
+    Serial1.print("t1.txt=\"RUNNING...\"");
     Serial1.print("\xFF\xFF\xFF");
   }
   previous_value = run_stop;
