@@ -4,17 +4,20 @@
 AccelStepper stepper1(AccelStepper::DRIVER, 10, 9); // (10 = step) ; (9 = dir)
 AccelStepper stepper2(AccelStepper::DRIVER, 21, 20); // (21 = step) ; (20 = dir)
 
-#define enc_dt       13
-#define enc_clk      12
-#define enc_sw        5 // was on pin 11 (interrupt 0) caused crashing
+//#define PIN_SWITCH
 
-#define step_pin     10
-#define dir_pin       9
+#define enc_dt                           13
+#define enc_clk                          12
+#define enc_sw                            5 // was on pin 11 (interrupt 0) caused crashing
 
-#define CCW           0
-#define CW            1
-#define PULSE_WIDTH                     500
-#define SPEED                          4000 // Stepper speed in steps per second
+#define step_pin                         10
+#define dir_pin                           9
+
+#define CCW                               0
+#define CW                                1
+
+#define MAX_SPEED                       3000 // Stepper speed in steps per second
+#define ACCELERATION                   10000 // Stepper acceleration in (steps per second)^2
 #define RUNNING                           1
 #define STOPPED                           0
 
@@ -26,7 +29,8 @@ AccelStepper stepper2(AccelStepper::DRIVER, 21, 20); // (21 = step) ; (20 = dir)
 
 #define MOTOR_STEPS_PER_ROTATION        200
 #define GEAR_RATIO                      100
-#define GEARED_STEPS_PER_ROTATION     20000
+#define STEP_FACTOR                       1
+#define GEARED_STEPS_PER_ROTATION       (MOTOR_STEPS_PER_ROTATION * GEAR_RATIO) // 20000
 
 #define HOME_SCREEN_INIT                  0
 #define HOME_SCREEN                       1
@@ -38,11 +42,21 @@ AccelStepper stepper2(AccelStepper::DRIVER, 21, 20); // (21 = step) ; (20 = dir)
 #define BUTTON_ID_06                      6
 #define BUTTON_ID_07                      7
 
+#define DISPLAY_RATE_MS                 100 // period to update display in ms
+
+int analogPin = A0;
+int analogVal = 0;
+
 int screenState = HOME_SCREEN_INIT; // start at home screen init state
 
 volatile int encoderValue = 0;
 volatile int turnDetected = 0;
 volatile int pinSwitchDetected = 0;
+
+int display_period = DISPLAY_RATE_MS;
+unsigned long time_now_display = 0;
+unsigned long time_now_adc = 0;
+int adc_period = 100;
 
 int Bx;
 int By;
@@ -64,13 +78,10 @@ typedef struct
 FlashStorage(flash_store, storage);
 storage flash_variables;
 
-int pos = 3600;
-
 void setup()
 {
-  // put your setup code here, to run once:
   Serial.begin(115200);
-  Serial1.begin(9600);
+  Serial1.begin(115200);
 
   pinMode(enc_dt, INPUT_PULLUP);  
   pinMode(enc_clk, INPUT_PULLUP);
@@ -78,11 +89,12 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(enc_clk), encoder, FALLING);
   attachInterrupt(digitalPinToInterrupt(enc_sw), pin_switch, FALLING);
 
-  stepper1.setMaxSpeed(SPEED);
-  stepper1.setAcceleration(10000);
-  stepper2.setMaxSpeed(SPEED);
-  stepper2.setAcceleration(10000);
+  stepper1.setMaxSpeed(MAX_SPEED);
+  stepper1.setAcceleration(ACCELERATION);
   
+  stepper2.setMaxSpeed(MAX_SPEED);
+  stepper2.setAcceleration(ACCELERATION);
+
   restoreNVM(); // read nvm and restore stored variables
 }
 
@@ -98,8 +110,9 @@ void loop()
     
     case HOME_SCREEN:
       readRotaryEncoder();                           // Read rotary encoder for distance and direction
-      updateDisplay(StepperPosition, NO_INIT);       // Update display before move to new position
       AccelStepper_run(StepperPosition);
+      updateDisplay(StepperPosition, NO_INIT);       // Update display before move to new position  ;
+      readHallEffectSensor();
       displayRun();
       break;
 
@@ -119,12 +132,12 @@ void readRotaryEncoder()
 {
   int RotaryValue = 0;
 
-  RotaryValue = encoderValue * GEAR_RATIO;
+  RotaryValue = encoderValue * GEAR_RATIO * STEP_FACTOR;
 
   if(RotaryValue >= GEARED_STEPS_PER_ROTATION)
   {
     RotaryValue = GEARED_STEPS_PER_ROTATION;
-    encoderValue = MOTOR_STEPS_PER_ROTATION; // encoder counts in raw motor steps (not geared steps)
+    encoderValue = MOTOR_STEPS_PER_ROTATION / STEP_FACTOR; // encoder counts in raw motor steps (not geared steps)
   }
   else if(RotaryValue <= 0)
   {
@@ -146,9 +159,11 @@ void AccelStepper_run(int stepperPos)
   int stepper_2_pos = stepperPos;
   static int motorDirectionChangePrev = 0;
 
+#ifdef PIN_SWITCH 
   if(pinSwitchDetected == 1)
   {
     pinSwitchDetected = 0;
+#endif
 
     if(motorDirectionChange == TRUE && motorDirectionChangePrev == FALSE)
     {
@@ -171,14 +186,20 @@ void AccelStepper_run(int stepperPos)
     
     stepper1.moveTo(stepper_1_pos);
     stepper2.moveTo(stepper_2_pos);
+
+#ifdef PIN_SWITCH
     displayMotorStatus(RUNNING);
   }
+#endif
   stepper1.run();
   stepper2.run();
+
+#ifdef PIN_SWITCH 
   if(stepper1.distanceToGo() == 0)
   {
     displayMotorStatus(STOPPED);
   }
+#endif
 }
 
 void encoder()
@@ -192,16 +213,26 @@ void updateDisplay(int stepper_pos, int init)
   static int currentValue = 0;
   int displayValue = 0;
   //displayValue = (stepper_pos * 360 / 20000);
+  //displayValue = (311*cos((2*PI*stepper_pos)/20000));
 
-  displayValue = stepper_pos;
-
-  if((currentValue != displayValue) || (init == 1))
+  if(millis() >= time_now_display + display_period)
   {
-    Serial1.print("n0.val=");
-    Serial1.print(displayValue);
-    Serial1.print("\xFF\xFF\xFF");
+    time_now_display += display_period;
+    displayValue = stepper_pos;
+
+    if((currentValue != displayValue) || (init == 1))
+    {
+      if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
+      {
+        //displayValue = (311*cos((2*PI*stepper_pos)/20000));
+        Serial1.print("n0.val=");
+        Serial1.print(displayValue);
+        Serial1.print("\xFF\xFF\xFF");
+        displayValue = stepper_pos;  
+        currentValue = displayValue;
+      }
+    }
   }
-  currentValue = displayValue;
 }
 
 void displayRun()
@@ -392,4 +423,21 @@ void displayMotorStatus(int run_stop)
     Serial1.print("\xFF\xFF\xFF");
   }
   previous_value = run_stop;
+}
+
+void readHallEffectSensor()
+{
+  if(millis() >= time_now_adc + adc_period)
+  {
+    time_now_adc += adc_period;
+    
+    if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
+    {
+      analogReadResolution(12);
+      analogVal = analogRead(analogPin);
+      Serial1.print("n1.val=");
+      Serial1.print(analogVal - 1644);
+      Serial1.print("\xFF\xFF\xFF");  
+    }
+  }
 }
