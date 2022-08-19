@@ -77,6 +77,11 @@ int By;
 int Stepper_1_Position = 0;
 int Stepper_2_Position = 0;
 
+int Magnitude = 0;
+int Angle = 0;
+int Bdisp = 0;
+int Tdisp = 0;
+
 int PinSwitchFlag = 0;
 int SavedEncoder_1_Value = 0;
 int SavedEncoder_2_Value = 0;
@@ -128,7 +133,8 @@ void loop()
     case HOME_SCREEN_INIT:
       encoder1.setPosition(SavedEncoder_1_Value);
       //encoder2.setPosition(SavedEncoder_2_Value);
-      updateDisplay(Stepper_1_Position, Stepper_2_Position, INIT);          // Update display at initialisation
+      //updateDisplay(Stepper_1_Position, Stepper_2_Position, INIT);          // Update display at initialisation
+      updateDisplay_Mag_Angle(Magnitude, Angle, INIT);          // Update display at initialisation
       screenState = HOME_SCREEN;
       break;
     
@@ -137,7 +143,11 @@ void loop()
       encoder2.tick();
       Encoder_Index = readRotaryEncoder();                           // Read rotary encoder for distance and direction
       AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index);
-      updateDisplay(Stepper_1_Position, Stepper_2_Position, NO_INIT);       // Update display before move to new position
+      Calculate_Angle_Magnitude();
+      //Calculate_Magnitude();
+      //Calculate_Angle();
+      //updateDisplay(Stepper_1_Position, Stepper_2_Position, NO_INIT);       // Update display before move to new position
+      updateDisplay_Mag_Angle(Magnitude, Angle, NO_INIT);       // Update display before move to new position
       readHallEffectSensors();
       displayRun();
       break;
@@ -240,11 +250,15 @@ void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
     {
       stepper_1_pos = stepper_1_Pos;
       stepper_2_pos = stepper_1_Pos;
+      encoder2.setPosition(encoder1.getPosition());
+      Stepper_2_Position = Stepper_1_Position;
     }
     else if(encoder_index == 2)
     {
       stepper_1_pos = stepper_1_Pos;
       stepper_2_pos = -stepper_1_Pos;
+      encoder1.setPosition(encoder2.getPosition());
+      Stepper_1_Position = Stepper_2_Position;
     }
     //Serial.println(encoder_index);
     encoder_index_prev = encoder_index;
@@ -270,6 +284,8 @@ void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
       stepper1.moveTo(stepper_1_pos);
       stepper2.moveTo(stepper_2_pos);
 
+      //Serial.println(stepper_2_pos - stepper_1_pos);
+
 
 #ifdef PIN_SWITCH
     displayMotorStatus(RUNNING);
@@ -285,6 +301,109 @@ void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
   }
 #endif
 }
+
+void Calculate_Magnitude()
+{
+  static int Motor_1_Position_Magnitude_prev = 0;
+  static int Magnitude = 0;
+  int delta_position_magnitude = 0;
+
+  if((Stepper_1_Position != Motor_1_Position_Magnitude_prev) && (Encoder_Index == 1))
+  {
+    delta_position_magnitude = (Stepper_1_Position - Motor_1_Position_Magnitude_prev);
+    Magnitude += delta_position_magnitude;
+    Motor_1_Position_Magnitude_prev = Stepper_1_Position;
+    Serial.println(Magnitude);
+    //Serial.println(Motor_1_Position_Magnitude_prev);
+  }
+  else if(Encoder_Index == 2)
+  {
+    Motor_1_Position_Magnitude_prev = Stepper_1_Position;
+  }
+  else
+  {
+    // do nothing
+  }
+}
+
+void Calculate_Angle()
+{
+  static int Motor_1_Position_Angle_prev = 0;
+  static int Angle = 0;
+  int delta_position_angle = 0;
+
+  if((Stepper_1_Position != Motor_1_Position_Angle_prev) && (Encoder_Index == 2))
+  {
+    delta_position_angle = (Stepper_1_Position - Motor_1_Position_Angle_prev);
+    Angle += delta_position_angle;
+    Motor_1_Position_Angle_prev = Stepper_1_Position;
+    Serial.println(Angle);
+    //Serial.println(Motor_1_Position_Angle_prev);
+  }
+  else if(Encoder_Index == 1)
+  {
+    Motor_1_Position_Angle_prev = Stepper_1_Position;
+  }
+  else
+  {
+    // do nothing
+  }
+}
+
+void Calculate_Angle_Magnitude()
+{
+  static int Motor_1_Position_Angle_prev = 0;
+  int delta_position_angle = 0;
+  
+  static int Motor_1_Position_Magnitude_prev = 0;
+  int delta_position_magnitude = 0;
+
+  if((Stepper_1_Position != Motor_1_Position_Magnitude_prev) && (Encoder_Index == 1))
+  {
+    delta_position_magnitude = (Stepper_1_Position - Motor_1_Position_Magnitude_prev);
+    Magnitude += delta_position_magnitude;
+    Motor_1_Position_Magnitude_prev = Stepper_1_Position;
+    Motor_1_Position_Angle_prev = Stepper_1_Position;
+    //Serial.println("Mag");
+    //Serial.println(Magnitude);
+    //Serial.println("Mag Prev");
+    //Serial.println(Motor_1_Position_Magnitude_prev);
+    //Serial.println(Motor_1_Position_Magnitude_prev);
+  }
+  else if(Encoder_Index == 2)
+  {
+    Motor_1_Position_Magnitude_prev = Stepper_1_Position;
+  }
+  else
+  {
+    // do nothing
+  }
+
+  if((Stepper_1_Position != Motor_1_Position_Angle_prev) && (Encoder_Index == 2))
+  {
+    delta_position_angle = (Stepper_1_Position - Motor_1_Position_Angle_prev);
+    Angle += delta_position_angle;
+    Motor_1_Position_Angle_prev = Stepper_1_Position;
+    Motor_1_Position_Magnitude_prev = Stepper_1_Position;
+    //Serial.println("Angle");
+    //Serial.println(Angle);
+    //Serial.println(Motor_1_Position_Angle_prev);
+  }
+  else if(Encoder_Index == 1)
+  {
+    Motor_1_Position_Angle_prev = Stepper_1_Position;
+  }
+  else
+  {
+    // do nothing
+  }
+
+  // calculate Bdisp and Tdisp
+  //Bdisp = sqrt(sq(Magnitude) + sq(Angle));
+  //Tdisp = atan2(
+  
+}  
+
 
 //void encoder()
 //{
@@ -329,6 +448,59 @@ void updateDisplay(int stepper_1_pos, int stepper_2_pos, int init)
         Serial1.print("\xFF\xFF\xFF");
         stepper_2_displayValue = stepper_2_pos;  
         stepper_2_currentValue = stepper_2_displayValue;
+      }
+    }
+  }
+}
+
+void updateDisplay_Mag_Angle(int Mag, int Angle, int init)
+{
+  static int Magnitude_currentValue = 0;
+  static int Magnitude_By_currentValue = 0;
+  static int Angle_currentValue = 0;
+  int magnitude_displayValue = 0;
+  int magnitude_By_displayValue = 0;
+  int angle_displayValue = 0;
+
+  if((millis() >= time_now_display + display_period) || (init == 1))
+  {
+    time_now_display += display_period;
+    magnitude_displayValue = Mag;
+    angle_displayValue = Angle;
+    int bdisp = 0;
+
+    if((Magnitude_currentValue != magnitude_displayValue) || (init == 1))
+    {
+      if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
+      {
+        magnitude_displayValue = (311 * cos((2 * PI * Mag)/20000));
+        Serial1.print("n0.val=");
+        Serial1.print(magnitude_displayValue);
+        Serial1.print("\xFF\xFF\xFF");
+
+        magnitude_By_displayValue = (10 * sin((2 * PI * Mag)/20000));
+        Serial1.print("n1.val=");
+        Serial1.print(magnitude_By_displayValue);
+        Serial1.print("\xFF\xFF\xFF");
+
+        bdisp = sqrt((magnitude_displayValue * magnitude_displayValue) + (magnitude_By_displayValue * magnitude_By_displayValue));
+        Serial1.print("n2.val=");
+        Serial1.print(bdisp);
+        Serial1.print("\xFF\xFF\xFF");
+        magnitude_displayValue = Mag;  
+        Magnitude_currentValue = magnitude_displayValue;
+      }
+    }
+    if((Angle_currentValue != angle_displayValue) || (init == 1))
+    {
+      if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
+      {
+        angle_displayValue = ((360 * Angle)/20000);
+        Serial1.print("n3.val=");
+        Serial1.print(angle_displayValue);
+        Serial1.print("\xFF\xFF\xFF");
+        angle_displayValue = Angle;  
+        Angle_currentValue = angle_displayValue;
       }
     }
   }
@@ -552,12 +724,12 @@ void readHallEffectSensors()
       analogReadResolution(12);
       analogVal_1 = analogRead(analogPin_1);
       analogVal_2 = analogRead(analogPin_2);
-      Serial1.print("n1.val=");
-      Serial1.print((analogVal_1 - 1644) * 3300 / 4096); // display in mV (mT?)
-      Serial1.print("\xFF\xFF\xFF");
-      Serial1.print("n2.val=");
-      Serial1.print((analogVal_2 - 1656) * 3300 / 4096); // display in mV (mT?)
-      Serial1.print("\xFF\xFF\xFF"); 
+//      Serial1.print("n1.val=");
+//      Serial1.print((analogVal_1 - 1644) * 3300 / 4096); // display in mV (mT?)
+//      Serial1.print("\xFF\xFF\xFF");
+//      Serial1.print("n2.val=");
+//      Serial1.print((analogVal_2 - 1656) * 3300 / 4096); // display in mV (mT?)
+//      Serial1.print("\xFF\xFF\xFF"); 
     }
   }
 }
