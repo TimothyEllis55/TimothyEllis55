@@ -468,6 +468,7 @@ void updateDisplay_Mag_Angle(int Mag, int Angle, int init)
     magnitude_displayValue = Mag;
     angle_displayValue = Angle;
     int bdisp = 0;
+    int tdisp = 0;
 
     if((Magnitude_currentValue != magnitude_displayValue) || (init == 1))
     {
@@ -487,6 +488,12 @@ void updateDisplay_Mag_Angle(int Mag, int Angle, int init)
         Serial1.print("n2.val=");
         Serial1.print(bdisp);
         Serial1.print("\xFF\xFF\xFF");
+
+        tdisp = atan2(magnitude_By_displayValue, magnitude_displayValue) * 360 / PI;
+        Serial1.print("n4.val=");
+        Serial1.print(tdisp);
+        Serial1.print("\xFF\xFF\xFF");
+        
         magnitude_displayValue = Mag;  
         Magnitude_currentValue = magnitude_displayValue;
       }
