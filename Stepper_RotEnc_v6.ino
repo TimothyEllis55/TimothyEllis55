@@ -33,13 +33,20 @@ RotaryEncoder encoder2(enc2_dt, enc2_clk, RotaryEncoder::LatchMode::TWO03);
 #define NO_INIT                           0
 #define INIT                              1
 
+#define NO_RESET                          0
+#define RESET                             1
+
+#define NO_REVERSE                        0
+#define REVERSE                           1
+
 #define FALSE                             0
 #define TRUE                              1
 
 #define MOTOR_STEPS_PER_ROTATION        200
 #define GEAR_RATIO                      100
 #define STEP_FACTOR                       1
-#define ROTARY_GAIN                     100
+#define ROTARY_GAIN_FINE                 50
+#define ROTARY_GAIN_COARSE              100
 #define GEARED_STEPS_PER_ROTATION       (MOTOR_STEPS_PER_ROTATION * GEAR_RATIO) // 20000
 
 #define HOME_SCREEN_INIT                  0
@@ -52,13 +59,13 @@ RotaryEncoder encoder2(enc2_dt, enc2_clk, RotaryEncoder::LatchMode::TWO03);
 #define BUTTON_ID_02                      2
 #define BUTTON_ID_03                      3
 #define BUTTON_ID_04                      4
+#define BUTTON_ID_05                      5
 #define BUTTON_ID_06                      6
 #define BUTTON_ID_07                      7
 
 #define DISPLAY_RATE_MS                 100 // period to update display in ms
 
-#define HALL_FILTER_ONE( v, c, n )      ((v - (v / c))+(n / c))  
-//  filter->X_g = PEND_FILTER_ONE(filter->X_g, PEND_FILTER_COEFF, x_in);
+#define HALL_FILTER_ONE( v, c, n )      ((v - (v / c))+(n / c))
 
 int analogPin_1 = A0;               // Hall effect sensor on A0
 int analogPin_2 = A1;               // Hall effect sensor on A1
@@ -69,17 +76,20 @@ int screenState = HOME_SCREEN_INIT; // start at home screen init state
 
 volatile int encoderValue = 0;
 volatile int turnDetected = 0;
-volatile int pinSwitchDetected = 0;
+volatile int pinSwitch_1_Detected = 0;
+volatile int pinSwitch_2_Detected = 0;
 
 int display_period = DISPLAY_RATE_MS;
 unsigned long time_now_display = 0;
 unsigned long time_now_adc = 0;
 unsigned long time_now_stepper = 0;
-int adc_period = 100;
+int adc_period = 200;
 int stepper_period = 1;
 
-int Bx;
-int By;
+int Rotary_gain = ROTARY_GAIN_COARSE;
+
+int B_max = 0;
+int B_min = 0;
 
 int Stepper_1_Position = 0;
 int Stepper_2_Position = 0;
@@ -87,15 +97,14 @@ int Stepper_2_Position = 0;
 int RotaryValue_1 = 0;
 int RotaryValue_2 = 0;
 
-//int Magnitude = 0;
-//int Angle = 0;
+int Display_RotaryValue_1 = 0;
+int Display_RotaryValue_2 = 0;
+
 int Bdisp = 0;
 int Tdisp = 0;
 
-int PinSwitchFlag = 0;
 int SavedEncoder_1_Value = 0;
 int SavedEncoder_2_Value = 0;
-int motorDirectionChange = FALSE;
 int Encoder_Index = 0;
 
 typedef struct
@@ -106,8 +115,8 @@ typedef struct
   int nvm_encoder_2_value;
   int nvm_saved_encoder_1_value;
   int nvm_saved_encoder_2_value;
-  int nvm_Bx;
-  int nvm_By;
+  int nvm_B_max;
+  int nvm_B_min;
 }storage;
 
 FlashStorage(flash_store, storage);
@@ -123,7 +132,8 @@ void setup()
   pinMode(enc1_sw, INPUT_PULLUP);
   pinMode(enc2_sw, INPUT_PULLUP);
   //attachInterrupt(digitalPinToInterrupt(enc_clk), encoder, FALLING);
-  attachInterrupt(digitalPinToInterrupt(enc1_sw), pin_switch, FALLING);
+  attachInterrupt(digitalPinToInterrupt(enc1_sw), pin_switch_1, FALLING);
+  attachInterrupt(digitalPinToInterrupt(enc2_sw), pin_switch_2, FALLING);
 
   stepper1.setMaxSpeed(MAX_SPEED);
   stepper1.setSpeed(4000);
@@ -142,8 +152,10 @@ void loop()
   {
     case HOME_SCREEN_INIT:
       encoder1.setPosition(SavedEncoder_1_Value);
-      //encoder2.setPosition(SavedEncoder_2_Value);
-      updateDisplay_Mag_Angle(RotaryValue_1, RotaryValue_2, INIT);          // Update display at initialisation
+      encoder2.setPosition(SavedEncoder_2_Value);
+      Serial.println(encoder1.getPosition());
+      Serial.println(encoder2.getPosition());
+      updateDisplay_Mag_Angle(Display_RotaryValue_1, Display_RotaryValue_2, INIT);          // Update display at initialisation
       screenState = HOME_SCREEN;
       break;
     
@@ -154,8 +166,9 @@ void loop()
       {
         Encoder_Index = readRotaryEncoder();                           // Read rotary encoder for distance and direction
       }
-      AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index);
-      updateDisplay_Mag_Angle(RotaryValue_1, RotaryValue_2, NO_INIT);       // Update display before move to new position
+      Check_rotary_gain();
+      AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index, NO_RESET);
+      updateDisplay_Mag_Angle(Display_RotaryValue_1, Display_RotaryValue_2, NO_INIT);       // Update display before move to new position
       displayRun();
       break;
 
@@ -166,7 +179,7 @@ void loop()
       {
         Encoder_Index = readRotaryEncoder();                           // Read rotary encoder for distance and direction
       }
-      AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index);
+      AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index, NO_RESET);
       hall_probes_screen_run();
       displayRun();
       break;
@@ -187,34 +200,32 @@ void loop()
 
 int readRotaryEncoder()
 {
-  //int RotaryValue_1 = 0;
-  //int RotaryValue_2 = 0;
   static int encoder_index = 0;
 
   if((int)encoder1.getDirection() != 0)
   {
-    RotaryValue_1 = ((encoder1.getPosition() / 2) * ROTARY_GAIN * STEP_FACTOR);
+    //RotaryValue_1 = ((encoder1.getPosition() / 2) * ROTARY_GAIN_COARSE * STEP_FACTOR);
+    RotaryValue_1 = (encoder1.getPosition() / 2);
+    Display_RotaryValue_1 = RotaryValue_1 * Rotary_gain;
 
-    if(RotaryValue_1 < 0)
+    if(Display_RotaryValue_1 < 0)
     {
-      RotaryValue_1 = 0;
-      encoder1.setPosition(0);
+      Display_RotaryValue_1 += GEARED_STEPS_PER_ROTATION;
     }
-
     Stepper_1_Position = RotaryValue_1;
     SavedEncoder_1_Value = encoder1.getPosition();
     encoder_index = 1;
   }
   else if((int)encoder2.getDirection() != 0)
   {
-    RotaryValue_2 = (encoder2.getPosition() / 2) * ROTARY_GAIN * STEP_FACTOR;
+    //RotaryValue_2 = (encoder2.getPosition() / 2) * ROTARY_GAIN_COARSE * STEP_FACTOR;
+    RotaryValue_2 = (encoder2.getPosition() / 2);
+    Display_RotaryValue_2 = RotaryValue_2 * Rotary_gain;
 
-    if(RotaryValue_2 < 0)
+    if(Display_RotaryValue_2 < 0)
     {
-      RotaryValue_2 = 0;
-      encoder2.setPosition(0);
+      Display_RotaryValue_2 += GEARED_STEPS_PER_ROTATION;
     }
-
     Stepper_2_Position = RotaryValue_2;
     SavedEncoder_2_Value = encoder2.getPosition();
     encoder_index = 2;
@@ -222,18 +233,37 @@ int readRotaryEncoder()
   return encoder_index;
 }
 
-void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
+void Check_rotary_gain()
+{
+  if(pinSwitch_1_Detected)
+  {
+    pinSwitch_1_Detected = 0;
+    Rotary_gain = (Rotary_gain == ROTARY_GAIN_COARSE) ? ROTARY_GAIN_FINE : ROTARY_GAIN_COARSE;
+  }
+}
+
+void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index, int reset)
 {
   static int stepper_1_Pos_prev = 0;
   static int stepper_2_Pos_prev = 0;
-  static int steps_to_move_1 = 0;
-  static int steps_to_move_2 = 0;
+  int steps_to_move_1 = 0;
+  int steps_to_move_2 = 0;
 
+  //stepper_1_Pos = stepper_1_Pos * Rotary_gain;
+  //stepper_2_Pos = stepper_2_Pos * Rotary_gain;
+  
   static int encoder_index_prev = 0;
+
+  if(reset)
+  {
+    stepper_1_Pos_prev = 0;
+    stepper_2_Pos_prev = 0;
+    return;
+  }
 
   if((stepper_1_Pos != stepper_1_Pos_prev) && (encoder_index == 1)) // counter-rotation (Amplitude dial change)
   {
-    steps_to_move_1 = (stepper_1_Pos - stepper_1_Pos_prev); // get delta needed to move
+    steps_to_move_1 = (stepper_1_Pos - stepper_1_Pos_prev) * Rotary_gain; // get delta needed to move
     stepper_1_Pos_prev = stepper_1_Pos;
     steps_to_move_2 = -steps_to_move_1; // counter-rotation
     if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0)
@@ -248,7 +278,7 @@ void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
   }
   else if((stepper_2_Pos != stepper_2_Pos_prev) && (encoder_index == 2)) // co-rotation (Angle dial change)
   {
-    steps_to_move_2 = (stepper_2_Pos - stepper_2_Pos_prev); // get delta needed to move
+    steps_to_move_2 = (stepper_2_Pos - stepper_2_Pos_prev) * Rotary_gain; // get delta needed to move
     stepper_2_Pos_prev = stepper_2_Pos;
     steps_to_move_1 = steps_to_move_2; // co-rotation
     if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0)
@@ -270,61 +300,83 @@ void AccelStepper_run(int stepper_1_Pos, int stepper_2_Pos, int encoder_index)
 
 void updateDisplay_Mag_Angle(int Mag, int Angle, int init)
 {
-  static int Magnitude_currentValue = 0;
-  static int Magnitude_By_currentValue = 0;
-  static int Angle_currentValue = 0;
-  int magnitude_displayValue = 0;
-  int magnitude_By_displayValue = 0;
-  int angle_displayValue = 0;
+  static int Mag_prev = 0;
+  static int Angle_prev = 0;
+
+  int Angle_counts = 0;
+  
+  static int Bx_1 = 0;
+  static int By_1 = 0;
+  int B_disp = 0;
+  int T_disp = 0;
+  int Bx = 0;
+  int By = 0;
 
   if((millis() >= time_now_display + display_period) || (init == 1))
   {
-    time_now_display += display_period;
-    magnitude_displayValue = Mag;
-    angle_displayValue = Angle;
-    int bdisp = 0;
-    int tdisp = 0;
+    //time_now_display += display_period;
+    time_now_display = millis();
 
-    if((Magnitude_currentValue != magnitude_displayValue) || (init == 1))
+    if((Mag != Mag_prev) || Angle != Angle_prev || (init == 1))
     {
       if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
       {
+        Mag_prev = Mag;
         Mag = (Mag % GEARED_STEPS_PER_ROTATION);
-        magnitude_displayValue = (311 * cos((2 * PI * Mag) / GEARED_STEPS_PER_ROTATION));
-        Serial1.print("n0.val=");
-        Serial1.print(magnitude_displayValue);
-        Serial1.print("\xFF\xFF\xFF");
+        By_1 = (B_max * cos((2 * PI * Mag) / GEARED_STEPS_PER_ROTATION));
+        Bx_1 = (B_min * sin((2 * PI * Mag) / GEARED_STEPS_PER_ROTATION));
 
-//        magnitude_By_displayValue = (10 * sin((2 * PI * Mag) / GEARED_STEPS_PER_ROTATION));
-//        Serial1.print("n1.val=");
-//        Serial1.print(magnitude_By_displayValue);
-//        Serial1.print("\xFF\xFF\xFF");
-//
-//        bdisp = sqrt(sq(magnitude_displayValue) + sq(magnitude_By_displayValue));
-//        Serial1.print("n2.val=");
-//        Serial1.print(bdisp);
-//        Serial1.print("\xFF\xFF\xFF");
-//
-//        tdisp = atan2(magnitude_By_displayValue, magnitude_displayValue) * 360 / PI;
-//        Serial1.print("n4.val=");
-//        Serial1.print(tdisp);
-//        Serial1.print("\xFF\xFF\xFF");
-        
-        magnitude_displayValue = Mag;  
-        Magnitude_currentValue = magnitude_displayValue;
-      }
-    }
-    if((Angle_currentValue != angle_displayValue) || (init == 1))
-    {
-      if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
-      {
-        Angle = (Angle % GEARED_STEPS_PER_ROTATION);
-        angle_displayValue = ((360 * Angle) / GEARED_STEPS_PER_ROTATION);
-        Serial1.print("n1.val=");
-        Serial1.print(angle_displayValue);
+        B_disp = sqrt(sq(By_1) + sq(Bx_1));
+        Serial1.print("n0.val=");
+        Serial1.print(B_disp);
         Serial1.print("\xFF\xFF\xFF");
-        angle_displayValue = Angle;  
-        Angle_currentValue = angle_displayValue;
+    //  }
+    //}
+    //if((Angle != Angle_prev) || (init == 1))
+    //{
+    //  if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
+    //  {
+        Angle_prev = Angle;
+        Angle = (Angle % GEARED_STEPS_PER_ROTATION);
+        Angle_counts = ((360 * Angle) / GEARED_STEPS_PER_ROTATION);
+
+        //Serial.println("By_1");
+        //Serial.println(By_1);
+        //Serial.println("Bx_1");
+        //Serial.println(Bx_1);
+        //Serial.println("Angle Counts");
+        //Serial.println(Angle_counts);
+
+        T_disp = ((atan2(Bx_1, By_1) * 180 / PI));
+        T_disp = (T_disp < 0) ? (T_disp + 360) : (T_disp);
+        T_disp += Angle_counts;
+        
+//        
+//        Serial.println("Angle_counts");
+//        Serial.println(Angle_counts);
+//        Serial.println("Bx_1");
+//        Serial.println(Bx_1);
+//        Serial.println("By_1");
+//        Serial.println(By_1);
+//        Serial.println("atan2(Bx_1, By_1);");
+//        Serial.println(atan2(Bx_1, By_1) * 180 / PI);
+//        Serial.println("T_disp");
+//        Serial.println(T_disp % 360);
+        
+        Serial1.print("n1.val=");
+        //Serial1.print(Angle_counts);
+        Serial1.print(T_disp % 360);
+        Serial1.print("\xFF\xFF\xFF");
+     // }
+
+        Bx = sin(T_disp*PI/180) * B_disp;
+        By = cos(T_disp*PI/180) * B_disp;
+        Serial1.print("n2.val=");
+        Serial1.print(Bx);
+        Serial1.print("\xFF\xFF\xFF");
+        Serial1.print("n3.val=");
+        Serial1.print(By);
+        Serial1.print("\xFF\xFF\xFF");
       }
     }
   }
@@ -349,24 +401,34 @@ void displayRun()
         break;
 
       case BUTTON_ID_02:
-        screenState = HALL_PROBES_SCREEN;
+        screenState = HALL_PROBES_SCREEN;        // button "Align" has been pressed - hall probes display
         break;
 
-//      case BUTTON_ID_03:
-//        Serial.println("Store was pressed!");
-//        saveToFlash();
-//        break;
-
       case BUTTON_ID_03:
-        screenState = DATA_INPUT_SCREEN_INIT;    // button calibrate has been pressed - this is data entry screen
+        screenState = DATA_INPUT_SCREEN_INIT;    // button "Calibrate" has been pressed - this is data entry screen
+        break;
+
+      case BUTTON_ID_04:                         // button "Set" has been pressed on Align screen
+        Zero_All();                              // Zero all counters
+        saveToFlash();
+        break;
+
+      case BUTTON_ID_06:                         // button "Set" has been pressed on Calibrate screen
+        Serial.println("Store was pressed!");
+        saveToFlash();
         break;
     }
   }
 }
 
-void pin_switch()
+void pin_switch_1()
 {
-  pinSwitchDetected = 1;
+  pinSwitch_1_Detected = 1;
+}
+
+void pin_switch_2()
+{
+  pinSwitch_2_Detected = 1;
 }
 
 void restoreNVM()
@@ -374,164 +436,127 @@ void restoreNVM()
   flash_variables = flash_store.read();                             // read structure
   Stepper_1_Position = flash_variables.nvm_motor_1_position;        // restore stepper 1 position
   Stepper_2_Position = flash_variables.nvm_motor_2_position;        // restore stepper 2 position
-  encoder1.setPosition(flash_variables.nvm_encoder_1_value);       // restore encoder 1 value
-  encoder2.setPosition(flash_variables.nvm_encoder_2_value);       // restore encoder 2 value
+  encoder1.setPosition(flash_variables.nvm_encoder_1_value);        // restore encoder 1 value
+  encoder2.setPosition(flash_variables.nvm_encoder_2_value);        // restore encoder 2 value
   SavedEncoder_1_Value = flash_variables.nvm_saved_encoder_1_value; // restore saved encoder 1 value
   SavedEncoder_2_Value = flash_variables.nvm_saved_encoder_2_value; // restore saved encoder 2 value
-  Bx = flash_variables.nvm_Bx;                                      // restore Bx
-  By = flash_variables.nvm_By;                                      // restore By
+  B_max = flash_variables.nvm_B_max;                                // restore B_max
+  B_min = flash_variables.nvm_B_min;                                // restore B_min
 }
 
 void saveToFlash()
 {
-  flash_variables.nvm_motor_1_position = Stepper_1_Position;          // save stepper 1 position
-  flash_variables.nvm_motor_2_position = Stepper_2_Position;          // save stepper 2 position
+  flash_variables.nvm_motor_1_position = Stepper_1_Position;        // save stepper 1 position
+  flash_variables.nvm_motor_2_position = Stepper_2_Position;        // save stepper 2 position
   flash_variables.nvm_encoder_1_value = encoder1.getPosition();     // save encoder 1 value
   flash_variables.nvm_encoder_2_value = encoder2.getPosition();     // save encoder 2 value
   flash_variables.nvm_saved_encoder_1_value = SavedEncoder_1_Value; // save backup of encoder 1 value
   flash_variables.nvm_saved_encoder_2_value = SavedEncoder_2_Value; // save backup of encoder 2 value
-  flash_variables.nvm_Bx = Bx;                                      // save Bx
-  flash_variables.nvm_By = By;                                      // save By
+  flash_variables.nvm_B_max = B_max;                                // save B_max
+  flash_variables.nvm_B_min = B_min;                                // save B_min
   flash_store.write(flash_variables);                               // save structure
 }
 
 void data_input_screen_run(int init)
 {
-  static int Bx_previous_value = 0;
-  static int By_previous_value = 0;
+  static int B_max_prev = 0;
+  static int B_min_prev = 0;
   int encoder_1_snapshot = 0;
   int encoder_2_snapshot = 0;
-  int pinSwChange = 0;
+  static int encoder_1_scale = 1;
+  static int encoder_2_scale = 1;
 
   if(init)
   {
-    Bx_previous_value = 0;
-    By_previous_value = 0;
-    //SavedEncoderValue = encoderValue;
+    B_max_prev = 0;
+    B_min_prev = 0;
     SavedEncoder_1_Value = encoder1.getPosition();
     SavedEncoder_2_Value = encoder2.getPosition();
-    //encoderValue = 0;
     encoder1.setPosition(0);
     encoder2.setPosition(0);
-    setValueFocus(0);
-    PinSwitchFlag = 0;
 
     Serial1.print("n6.val=");
-    Serial1.print(Bx);
+    Serial1.print(B_max);
     Serial1.print("\xFF\xFF\xFF");
 
     Serial1.print("n7.val=");
-    Serial1.print(By);
+    Serial1.print(B_min);
     Serial1.print("\xFF\xFF\xFF");
     return;
   }
-
-  if(pinSwitchDetected)
+  if(pinSwitch_1_Detected)
   {
-    pinSwitchDetected = 0;
-    (PinSwitchFlag) ? (PinSwitchFlag = 0) : (PinSwitchFlag = 1);
-    //encoderValue = 0;
-    encoder1.setPosition(0);
-    Bx_previous_value = 0;
-    By_previous_value = 0;
-    //turnDetected = 1;
-    pinSwChange = 1;
+    pinSwitch_1_Detected = 0;
+    encoder_1_scale = (encoder_1_scale == 1) ? (encoder_1_scale = 10) : (encoder_1_scale = 1);
   }
-
-  //if(turnDetected)
-  //if(((int)encoder1.getDirection() != 0) || (pinSwChange == 1))
-  //Serial.println("before");
-  //Serial.println((int)encoder1.getDirection());
-  //if(((int)encoder1.getDirection() != 0) || ((int)encoder2.getDirection() != 0))
-  //{
-    
-    pinSwChange = 0;
-    //turnDetected = 0;
-    //encoder_snapshot = encoderValue;
-    //encoder_1_snapshot = (encoder1.getPosition() / 2);
-    //encoder_2_snapshot = (encoder2.getPosition() / 2);
-    //Serial.println("after");
-    //Serial.println((int)encoder1.getDirection());
-    //if(PinSwitchFlag == 0)
-    if((int)encoder1.getDirection() != 0)
-    {
-      encoder_1_snapshot = (encoder1.getPosition() / 2);
-      //Serial.println(encoderValue);
-      //Serial.println(Bx_previous_value);
-      //Serial.println(Bx);
-      //encoder_snapshot = encoderValue;
-      setValueFocus(0);
-      Bx += (encoder_1_snapshot - Bx_previous_value);
-      Bx_previous_value = encoder_1_snapshot;
-      Serial1.print("n6.val=");
-      Serial1.print(Bx);
-      Serial1.print("\xFF\xFF\xFF");
-      Serial.println("enc 1");
-    }
-    //else if(PinSwitchFlag == 1)
-    else if((int)encoder2.getDirection() != 0)
-    {
-      encoder_2_snapshot = (encoder2.getPosition() / 2);
-      //Serial.println(encoderValue);
-      //Serial.println(By_previous_value);
-      //Serial.println(By);
-      //encoder_snapshot = encoderValue;
-      setValueFocus(1);
-      By += (encoder_2_snapshot - By_previous_value);
-      By_previous_value = encoder_2_snapshot;
-      Serial1.print("n7.val=");
-      Serial1.print(By);
-      Serial1.print("\xFF\xFF\xFF");
-      Serial.println("enc 2");
-    }
-  //}
-}
-
-void setValueFocus(int item)
-{
-  if(item == 0)
+  if(pinSwitch_2_Detected)
   {
-    Serial1.print("n6.bco=65535");
-    Serial1.print("\xFF\xFF\xFF");
-    Serial1.print("n6.pco=0");
-    Serial1.print("\xFF\xFF\xFF");
-
-    Serial1.print("n7.bco=0");
-    Serial1.print("\xFF\xFF\xFF");
-    Serial1.print("n7.pco=65535");
+    pinSwitch_2_Detected = 0;
+    encoder_2_scale = (encoder_2_scale == 1) ? (encoder_2_scale = 10) : (encoder_2_scale = 1);
+  }
+  if((int)encoder1.getDirection() != 0)
+  {
+    encoder_1_snapshot = (encoder1.getPosition() / 2);
+    B_max += (encoder_1_snapshot - B_max_prev) * encoder_1_scale;
+    B_max_prev = encoder_1_snapshot;
+    Serial1.print("n6.val=");
+    Serial1.print(B_max);
     Serial1.print("\xFF\xFF\xFF");
   }
-  else if(item == 1)
+  else if((int)encoder2.getDirection() != 0)
   {
-    Serial1.print("n7.bco=65535");
-    Serial1.print("\xFF\xFF\xFF");
-    Serial1.print("n7.pco=0");
-    Serial1.print("\xFF\xFF\xFF");
-
-    Serial1.print("n6.bco=0");
-    Serial1.print("\xFF\xFF\xFF");
-    Serial1.print("n6.pco=65535");
+    encoder_2_snapshot = (encoder2.getPosition() / 2);
+    B_min += (encoder_2_snapshot - B_min_prev) * encoder_2_scale;
+    B_min_prev = encoder_2_snapshot;
+    Serial1.print("n7.val=");
+    Serial1.print(B_min);
     Serial1.print("\xFF\xFF\xFF");
   }
 }
 
 void hall_probes_screen_run()
 {
+  int analogVal_1_prev = analogVal_1;
+  int analogVal_2_prev = analogVal_2;
   if(millis() >= (time_now_adc + adc_period))
   {
-    time_now_adc += adc_period;
+    //time_now_adc += adc_period;
+    time_now_adc = millis();
     
     if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
     {
       analogReadResolution(12);
       analogVal_1 = analogRead(analogPin_1);
       analogVal_2 = analogRead(analogPin_2);
+      analogVal_1 = HALL_FILTER_ONE(analogVal_1_prev, 2, analogVal_1);
+      analogVal_2 = HALL_FILTER_ONE(analogVal_2_prev, 2, analogVal_2);
       Serial1.print("n4.val=");
       Serial1.print((analogVal_1 - 1644) * 3300 / 4096); // display in mV (mT?)
       Serial1.print("\xFF\xFF\xFF");
       Serial1.print("n5.val=");
       Serial1.print((analogVal_2 - 1656) * 3300 / 4096); // display in mV (mT?)
-      Serial1.print("\xFF\xFF\xFF"); 
+      Serial1.print("\xFF\xFF\xFF");
+      Serial.println("Hall probes run");
     }
   }
+}
+
+void Zero_All()
+{
+  Stepper_1_Position = 0;
+  Stepper_2_Position = 0;
+  RotaryValue_1 = 0;
+  RotaryValue_2 = 0;
+  Display_RotaryValue_1 = 0;
+  Display_RotaryValue_2 = 0;
+
+  encoder1.setPosition(0);
+  encoder2.setPosition(0);
+  SavedEncoder_1_Value = 0;
+  SavedEncoder_2_Value = 0;
+
+  stepper1.setCurrentPosition(0);
+  stepper2.setCurrentPosition(0);
+
+  AccelStepper_run(Stepper_1_Position, Stepper_2_Position, Encoder_Index, RESET);
 }
