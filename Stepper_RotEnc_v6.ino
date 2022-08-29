@@ -153,8 +153,6 @@ void loop()
     case HOME_SCREEN_INIT:
       encoder1.setPosition(SavedEncoder_1_Value);
       encoder2.setPosition(SavedEncoder_2_Value);
-      Serial.println(encoder1.getPosition());
-      Serial.println(encoder2.getPosition());
       updateDisplay_Mag_Angle(Display_RotaryValue_1, Display_RotaryValue_2, INIT);          // Update display at initialisation
       screenState = HOME_SCREEN;
       break;
@@ -498,6 +496,8 @@ void data_input_screen_run(int init)
   {
     encoder_1_snapshot = (encoder1.getPosition() / 2);
     B_max += (encoder_1_snapshot - B_max_prev) * encoder_1_scale;
+    B_max = (B_max > 999) ? 999 : B_max;
+    B_max = (B_max < 0) ? 0 : B_max;
     B_max_prev = encoder_1_snapshot;
     Serial1.print("n6.val=");
     Serial1.print(B_max);
@@ -507,6 +507,8 @@ void data_input_screen_run(int init)
   {
     encoder_2_snapshot = (encoder2.getPosition() / 2);
     B_min += (encoder_2_snapshot - B_min_prev) * encoder_2_scale;
+    B_min = (B_min > 999) ? 999 : B_min;
+    B_min = (B_min < 0) ? 0 : B_min;
     B_min_prev = encoder_2_snapshot;
     Serial1.print("n7.val=");
     Serial1.print(B_min);
@@ -520,7 +522,6 @@ void hall_probes_screen_run()
   int analogVal_2_prev = analogVal_2;
   if(millis() >= (time_now_adc + adc_period))
   {
-    //time_now_adc += adc_period;
     time_now_adc = millis();
     
     if(stepper1.distanceToGo() == 0 && stepper2.distanceToGo() == 0) // only if steppers have stopped update display
@@ -536,7 +537,6 @@ void hall_probes_screen_run()
       Serial1.print("n5.val=");
       Serial1.print((analogVal_2 - 1656) * 3300 / 4096); // display in mV (mT?)
       Serial1.print("\xFF\xFF\xFF");
-      Serial.println("Hall probes run");
     }
   }
 }
